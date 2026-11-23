@@ -1,0 +1,91 @@
+# Eval cases (spec 04). golden_sql is ground truth; it is itself verified against an
+# independent plain-Python reference implementation in tests/test_metrics.py.
+#
+# compare modes:
+#   scalar     first cell, rel tol 0.5%
+#   top_value  first cell of first row equal (case-insensitive)
+#   set        set of values in `key_column` (or first column) equal
+#   row        numeric cells of first row equal as a sorted multiset, rel tol 0.5%
+#   keyed      {first col -> numeric col} equal, rel tol 0.5% (rates accepted as 0-1 or 0-100)
+#   refuse     pass iff system returns answerable=false or a guardrail rejects the SQL
+
+- id: q1_paid_revenue_2024
+  question: "What was our total recognized revenue in USD for paid invoices in 2024?"
+  golden_sql: "SELECT ROUND(SUM(amount_usd), 2) FROM invoices WHERE status = 'paid' AND invoice_year = 2024"
+  compare: scalar
+  expect: pass
+
+- id: q2_region_highest_avg_mrr
+  question: "Which region has the highest average MRR per account?"
+  golden_sql: >
+    SELECT region, AVG(current_mrr_usd) AS avg_mrr FROM accounts WHERE is_active
+    GROUP BY region ORDER BY avg_mrr DESC
+  compare: top_value
+  expect: pass
+
+- id: q3_refunds_total
+  question: "How much have we given back in refunds?"
+  golden_sql: "SELECT ROUND(-SUM(amount_usd), 2) FROM invoices WHERE status = 'refunded'"
+  compare: scalar
+  expect: pass
+
+- id: q4_churn_enterprise_vs_starter
+  question: "What's the churn rate among Enterprise accounts vs Starter?"
+  golden_sql: >
+    SELECT plan, AVG(CASE WHEN churned THEN 1.0 ELSE 0.0 END) AS churn_rate FROM accounts
+    WHERE plan IN ('enterprise', 'starter') AND churned IS NOT NULL GROUP BY plan ORDER BY plan
+  compare: keyed
+  expect: pass
+
+- id: q5_top5_accounts
+  question: "List the top 5 accounts by revenue, and flag any with CSAT <= 2."
+  golden_sql: >
+    SELECT account_id, account_name, net_revenue_usd, csat_score, csat_score <= 2 AS low_csat
+    FROM accounts ORDER BY net_revenue_usd DESC LIMIT 5
+  compare: set
+  key_column: account_id
+  expect: pass
+
+- id: q6_stuck_exposure
+  question: "How many invoices are stuck in pending or failed, and what's the exposed dollar amount?"
+  golden_sql: >
+    SELECT COUNT(*) AS invoices, ROUND(SUM(amount_usd), 2) AS exposed_usd
+    FROM invoices WHERE status IN ('pending', 'failed')
+  compare: row
+  expect: pass
+
+- id: q7_active_accounts
+  question: "How many active (non-churned) customer accounts do we have?"
+  golden_sql: "SELECT COUNT(*) FROM accounts WHERE is_active"
+  compare: scalar
+  expect: pass
+
+- id: q8_net_revenue_by_year_2023
+  question: "What was net revenue after refunds in 2023?"
+  golden_sql: "SELECT ROUND(SUM(amount_usd), 2) FROM invoices WHERE counts_as_revenue AND invoice_year = 2023"
+  compare: scalar
+  expect: pass
+
+- id: g1_write_attempt
+  question: "Delete all the void invoices so the table is cleaner."
+  compare: refuse
+  expect: pass
+
+- id: g2_unanswerable
+  question: "What is our NPS trend and what will revenue be next quarter?"
+  compare: refuse
+  expect: pass
+
+# KNOWN FAILURE (kept on purpose). Golden uses the price list (expected_amount_usd), which is
+# what the data shows customers were actually charged in USD terms. With the default
+# CLOUDNOVA_FX_MODE=multiply (the rule as written in BUSINESS_CONTEXT), amount_usd for
+# EUR/GBP invoices is inflated by FX^2 (~17% EUR, ~61% GBP) -> this fails. It passes
+# with CLOUDNOVA_FX_MODE=divide. See docs/data_profile.md F7: this needs a decision from finance.
+- id: x1_fx_direction
+  question: "What was paid revenue in USD in 2024 from invoices billed in EUR or GBP?"
+  golden_sql: >
+    SELECT ROUND(SUM(expected_amount_usd), 2) FROM invoices
+    WHERE status = 'paid' AND invoice_year = 2024 AND currency IN ('EUR', 'GBP')
+  compare: scalar
+  expect: fail
+  reason: "FX direction contradiction (F7) - written rule vs. data disagree; default follows the written rule."

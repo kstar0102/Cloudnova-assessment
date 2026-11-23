@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+build/
+evals/results/*.json
+!evals/results/.gitkeep
+# The assessment brief itself is not part of the deliverable
+*.docx
+*.egg-info/
